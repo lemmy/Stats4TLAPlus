@@ -77,12 +77,271 @@
 
 \begin_body
 
-\begin_layout Standard
-Case Study A
+\begin_layout Subsection
+RabbitMQ Balancing Clients Algorithm
+\end_layout
+
+\begin_layout Subsubsection
+Consumer Groups - The Problem Being Addressed
 \end_layout
 
 \begin_layout Standard
-Case Study B
+RabbitMQ supports queue partitioning (sharding) via the use of hash-based
+ routing to a group of queues.
+ A common usage is to have a group of consuming applications consume from
+ this group of queues as if it were a single logical queue.
+ To accomplish this, each consumer in the group must be assigned zero, one
+ or more queues such that consumption is spread as evenly as possible across
+ the group.
+ Any perturbations such as consumers crashing or starting, or queues being
+ added or removed must cause a rebalancing to occur so that all queues are
+ consumed from and the consumption is balanced once again.
+ This functionality was popularized by Apache Kafka and is known as Consumer
+ Groups.
+\end_layout
+
+\begin_layout Standard
+RabbitMQ currently has a flawed solution for Consumer Groups called the
+ Sharding Plugin and there is a separate 
+\begin_inset CommandInset ref
+LatexCommand ref
+reference "subsec:RabbitMQ-Sharding-Plugin"
+plural "false"
+caps "false"
+noprefix "false"
+
+\end_inset
+
+case study to demonstrate its defective design in terms of its statistical
+ properties.
+\end_layout
+
+\begin_layout Subsubsection
+The Proposed Algorithm
+\end_layout
+
+\begin_layout Standard
+Another proposed algorithm from a libary author aimed to implement Consumer
+ Groups by leveraging two features of RabbitMQ and adding logic to the clients
+ that would make them cooperate in order to achieve a perfect balance of
+ queue consumption.
+ 
+\end_layout
+
+\begin_layout Standard
+The algorithm is as follows:
+\end_layout
+
+\begin_layout Itemize
+Create a group of queues.
+\end_layout
+
+\begin_layout Itemize
+Use RabbitMQ hash-based routing features to partition incoming messages
+ across the queue group.
+\end_layout
+
+\begin_layout Itemize
+Each queue enabled with the Single Active Consumer (SAC) feature that ensures
+ that only a single subscribed consumer is active on the queue at a time.
+ Inactive consumers remain subscribed but are not delivered messages.
+ In the event that the active consumer disappears (crash, unreachable, stops),
+ an inactive consumer is promoted to being the active consumer.
+ The order of precedence is First Subscribe, First Active.
+ Each queue maintains an in-memory 
+\emph on
+subscriber-queue
+\emph default
+ which it uses to take the next active consumer from.
+\end_layout
+
+\begin_layout Itemize
+A group of applications is started where each application adds a consumer
+ to each queue.
+ If there are 5 applications and 5 queues, then there will be 25 consumers
+ in total.
+\end_layout
+
+\begin_layout Itemize
+At all times, if an application detects it does not have a consumer on a
+ queue, it adds one.
+\end_layout
+
+\begin_layout Itemize
+Each application periodically performs a check with the following steps:
+ 
+\end_layout
+
+\begin_deeper
+\begin_layout Itemize
+Use the RabbitMQ HTTP API to see how many other applications there are and
+ how many of its current consumers are active.
+\end_layout
+
+\begin_layout Itemize
+Calculate the ideal number of active consumers it should have.
+\end_layout
+
+\begin_layout Itemize
+If it has too many active consumers, it performs a corresponding number
+ of 
+\begin_inset Quotes eld
+\end_inset
+
+releases
+\begin_inset Quotes erd
+\end_inset
+
+ in order for it reach it's the ideal number of active consumers.
+ A release consists of removing and then readding a consumer to a queue.
+ In doing so, the consumer of a different application is made active.
+\end_layout
+
+\end_deeper
+\begin_layout Itemize
+The calculation for the ideal number of active consumers is deterministic,
+ meaning that there is no direct coordination between clients.
+ Based on the same information, each client in the group will make the same
+ decision.
+\end_layout
+
+\begin_layout Standard
+The algorithm was modelled as a TLA+ specification and was shown to pass
+ the liveness properties:
+\end_layout
+
+\begin_layout Itemize
+All queues eventually have one or more consumers
+\end_layout
+
+\begin_layout Itemize
+A perfect balance of active status is eventually achieved
+\end_layout
+
+\begin_layout Standard
+While simple and not requiring a new RabbitMQ features to work, the algorithm
+ has obvious problems regarding liveness.
+ A group of applications will eventually achieve a perfect balance of active
+ status consumers between them, but the number of release events required
+ could be high, but how high? We needed to understand the statistical properties
+ of the algorithm to assess its utility.
+\end_layout
+
+\begin_layout Subsubsection
+The Statistical Properties
+\end_layout
+
+\begin_layout Standard
+Each application would periodically execute its check and release logic,
+ for example, every 30 seconds.
+ We were interested in measuring certain metrics of every balancing round,
+ where a round was defined as starting when there are one or more queues
+ without consumers, or active status is not perfect balanced across the
+ consumer group, and completing when all queues have consumers and active
+ status is perfectly balanced.
+\end_layout
+
+\begin_layout Standard
+The metrics we needed were:
+\end_layout
+
+\begin_layout Itemize
+The total number of releases
+\end_layout
+
+\begin_layout Itemize
+The number of releases per queue
+\end_layout
+
+\begin_layout Itemize
+The number of releases per application
+\end_layout
+
+\begin_layout Itemize
+The number of check cycles per application
+\end_layout
+
+\begin_layout Standard
+Additionally, we needed to measure these metrics as a function of:
+\end_layout
+
+\begin_layout Itemize
+queue count
+\end_layout
+
+\begin_layout Itemize
+application count
+\end_layout
+
+\begin_layout Itemize
+start order (random or sequential)
+\end_layout
+
+\begin_layout Standard
+If the group of applications a1..a5 started sequentially, with some sufficient
+ gap, then in the initial state, a1 would own all the active consumers,
+ and the subscriber-queue of each queue would be the same: a2,a3,a4,a5.
+ 
+\end_layout
+
+\begin_layout Standard
+If applications add consumers to the queues in a random order then the active
+ status would be randomly distributed and the subscriber-queue of each queue
+ would be randomly ordered.
+ This could happen in the event of a brief network outage that caused all
+ applications to readd consumers at the same time.
+\end_layout
+
+\begin_layout Standard
+The statistical properties of the sequential and random start should be
+ very different.
+\end_layout
+
+\begin_layout Subsubsection
+The Results
+\end_layout
+
+\begin_layout Standard
+The results confirmed that the algorithm had a problematic time to balance
+ and that whether applications created consumers sequentially or randomly
+ had a large impact.
+ 
+\end_layout
+
+\begin_layout Standard
+The random start results showed time to balance was a function of the total
+ number of queues and applications but also the relative number of applications
+ to queues.
+ When the number of applications equally the number of queues, balancing
+ would involve many more releases and check cycles compared to if there
+ were 50% or 150% percent the number of applications to queues.
+\end_layout
+
+\begin_layout Standard
+The sequential starts results showed release cascades caused by the subscriber-q
+ueues all being the same.
+ In order for the application that started last to be made active on a queue,
+ the active status had to granted to a1..a4 first.
+\end_layout
+
+\begin_layout Subsection
+RabbitMQ Sharding Plugin
+\begin_inset CommandInset label
+LatexCommand label
+name "subsec:RabbitMQ-Sharding-Plugin"
+
+\end_inset
+
+
+\end_layout
+
+\begin_layout Standard
+This is related to the balancing clients algorithm as it addresses the same
+ Consumer Group functionaility.
+ But it's design is flawed.
+ TODO: Show the probability of unsafe consumer to queue assignment as a
+ function of queue count, consumer count, cluster size and the total number
+ clients.
 \end_layout
 
 \end_body
