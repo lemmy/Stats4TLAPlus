@@ -124,5 +124,17 @@ Non-exhaustive validation (testing/simulation) is of limited use (unless
  if we draw a large enough sample (we don't need hyperproperties).
 \end_layout
 
+\begin_layout Itemize
+Why don't we use exhaustive search (BFS) to gather statistics?
+\end_layout
+
+\begin_deeper
+\begin_layout Itemize
+Stats would be incorrect because BFS only generates all states but not all
+ behaviors.
+ 
+\end_layout
+
+\end_deeper
 \end_body
 \end_document
